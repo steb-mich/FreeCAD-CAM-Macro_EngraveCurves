@@ -3,271 +3,304 @@ import FreeCADGui as Gui
 import Part
 import math
 import Path
-from PySide import QtWidgets, QtCore
-
+from PySide import QtWidgets, QtCore, QtGui
 
 doc = App.ActiveDocument
 
 # -----------------------------
-# PARAMETERS (GUI DIALOG)
+# TASK PANEL
 # -----------------------------
-class EngraveDialog(QtWidgets.QDialog):
+class EngraveTaskPanel:
     def __init__(self):
-        super().__init__(Gui.getMainWindow())
-        self.setWindowTitle("Engrave Curves Parameters")
-        self.setMinimumWidth(300)
+        self.collected_edges = []
+        self.form = QtWidgets.QWidget()
+        self.form.setWindowTitle("Engrave Curves Operation")
+        main_layout = QtWidgets.QVBoxLayout(self.form)
 
-        layout = QtWidgets.QFormLayout()
+        # --- JOB SELECTION ---
+        job_group = QtWidgets.QGroupBox("Job")
+        job_layout = QtWidgets.QFormLayout()
+        self.job_combo = QtWidgets.QComboBox()
+        self.jobs = [o for o in doc.Objects if hasattr(o, "Operations")]
+        for j in self.jobs:
+            self.job_combo.addItem(j.Label)
+        job_layout.addRow("Job:", self.job_combo)
+        job_group.setLayout(job_layout)
+        main_layout.addWidget(job_group)
+
+        # --- TOOL SELECTION ---
+        tool_group = QtWidgets.QGroupBox("Tool Controller")
+        tool_layout = QtWidgets.QFormLayout()
+        self.tool_combo = QtWidgets.QComboBox()
+        self.job_combo.currentIndexChanged.connect(self.populate_tools)
+        tool_layout.addRow("Tool:", self.tool_combo)
+        tool_group.setLayout(tool_layout)
+        main_layout.addWidget(tool_group)
+
+        # --- EDGES LIST ---
+        edges_group = QtWidgets.QGroupBox("Edges / Curves")
+        edges_layout = QtWidgets.QVBoxLayout()
+
+        self.edge_list = QtWidgets.QListWidget()
+        self.edge_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        edges_layout.addWidget(self.edge_list)
+
+        btn_row = QtWidgets.QHBoxLayout()
+
+        self.select_btn = QtWidgets.QPushButton("Select Edges")
+        self.select_btn.setCheckable(True)
+        self.select_btn.toggled.connect(self.toggle_select_mode)
+        btn_row.addWidget(self.select_btn)
+
+        self.add_btn = QtWidgets.QPushButton("Add Selected")
+        self.add_btn.setEnabled(False)
+        self.add_btn.clicked.connect(self.add_selected_edges)
+        btn_row.addWidget(self.add_btn)
+
+        self.del_btn = QtWidgets.QPushButton("Delete")
+        self.del_btn.clicked.connect(self.delete_edge)
+        btn_row.addWidget(self.del_btn)
+
+        edges_layout.addLayout(btn_row)
+
+        reorder_row = QtWidgets.QHBoxLayout()
+        self.up_btn = QtWidgets.QPushButton("▲ Move Up")
+        self.up_btn.clicked.connect(self.move_up)
+        reorder_row.addWidget(self.up_btn)
+
+        self.down_btn = QtWidgets.QPushButton("▼ Move Down")
+        self.down_btn.clicked.connect(self.move_down)
+        reorder_row.addWidget(self.down_btn)
+
+        edges_layout.addLayout(reorder_row)
+        edges_group.setLayout(edges_layout)
+        main_layout.addWidget(edges_group)
+
+        # --- PARAMETERS ---
+        param_group = QtWidgets.QGroupBox("Parameters")
+        param_layout = QtWidgets.QFormLayout()
 
         self.total_depth = QtWidgets.QDoubleSpinBox()
         self.total_depth.setRange(0.01, 100.0)
         self.total_depth.setDecimals(2)
         self.total_depth.setSuffix(" mm")
         self.total_depth.setValue(1.7)
-        layout.addRow("Total Depth:", self.total_depth)
+        param_layout.addRow("Total Depth:", self.total_depth)
 
         self.step_down = QtWidgets.QDoubleSpinBox()
         self.step_down.setRange(0.01, 100.0)
         self.step_down.setDecimals(2)
         self.step_down.setSuffix(" mm")
         self.step_down.setValue(0.2)
-        layout.addRow("Step Down:", self.step_down)
+        param_layout.addRow("Step Down:", self.step_down)
 
         self.safe_height = QtWidgets.QDoubleSpinBox()
         self.safe_height.setRange(0.1, 100.0)
         self.safe_height.setDecimals(2)
         self.safe_height.setSuffix(" mm")
         self.safe_height.setValue(5.0)
-        layout.addRow("Safe Height:", self.safe_height)
+        param_layout.addRow("Safe Height:", self.safe_height)
 
         self.feed = QtWidgets.QDoubleSpinBox()
         self.feed.setRange(1, 10000)
         self.feed.setDecimals(0)
         self.feed.setSuffix(" mm/min")
         self.feed.setValue(800)
-        layout.addRow("Feed Rate:", self.feed)
+        param_layout.addRow("Feed Rate:", self.feed)
 
         self.plunge = QtWidgets.QDoubleSpinBox()
         self.plunge.setRange(1, 10000)
         self.plunge.setDecimals(0)
         self.plunge.setSuffix(" mm/min")
         self.plunge.setValue(200)
-        layout.addRow("Plunge Rate:", self.plunge)
+        param_layout.addRow("Plunge Rate:", self.plunge)
 
         self.step_res = QtWidgets.QDoubleSpinBox()
-        self.step_res.setRange(0.01, 10.0)
-        self.step_res.setDecimals(2)
+        self.step_res.setRange(0.001, 10.0)
+        self.step_res.setDecimals(3)
         self.step_res.setSuffix(" mm")
         self.step_res.setValue(0.1)
-        layout.addRow("Curve Resolution:", self.step_res)
+        param_layout.addRow("Curve Resolution:", self.step_res)
 
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        param_group.setLayout(param_layout)
+        main_layout.addWidget(param_group)
+
+        # populate tools for initially selected job
+        self.populate_tools()
+
+    def populate_tools(self):
+        self.tool_combo.clear()
+        idx = self.job_combo.currentIndex()
+        if idx < 0 or idx >= len(self.jobs):
+            return
+        self.tools = []
+        for obj in doc.Objects:
+            if (obj.Name.startswith("TC_") or obj.Name.startswith("TC__") or
+                    hasattr(obj, "ToolNumber")):
+                self.tools.append(obj)
+                self.tool_combo.addItem(obj.Label)
+
+    def toggle_select_mode(self, checked):
+        self.add_btn.setEnabled(checked)
+        if checked:
+            self.select_btn.setText("✋ Click edges in 3D view, then Add")
+            Gui.Selection.clearSelection()
+        else:
+            self.select_btn.setText("Select Edges")
+
+    def add_selected_edges(self):
+        sel = Gui.Selection.getSelectionEx()
+        added = 0
+        for s in sel:
+            for i, sub in enumerate(s.SubObjects):
+                if isinstance(sub, Part.Edge):
+                    subname = s.SubElementNames[i]
+                    label = f"{s.Object.Label} → {subname}"
+                    existing = [self.edge_list.item(r).text()
+                                for r in range(self.edge_list.count())]
+                    if label not in existing:
+                        self.edge_list.addItem(label)
+                        self.collected_edges.append((s.Object, subname, sub))
+                        added += 1
+        Gui.Selection.clearSelection()
+        if added == 0:
+            QtWidgets.QMessageBox.warning(
+                self.form, "No edges",
+                "No edges found in current selection.\n"
+                "Please click edges in the 3D view first.")
+
+    def delete_edge(self):
+        row = self.edge_list.currentRow()
+        if row >= 0:
+            self.edge_list.takeItem(row)
+            self.collected_edges.pop(row)
+
+    def move_up(self):
+        row = self.edge_list.currentRow()
+        if row > 0:
+            item = self.edge_list.takeItem(row)
+            self.edge_list.insertItem(row - 1, item)
+            self.edge_list.setCurrentRow(row - 1)
+            self.collected_edges.insert(row - 1, self.collected_edges.pop(row))
+
+    def move_down(self):
+        row = self.edge_list.currentRow()
+        if row >= 0 and row < self.edge_list.count() - 1:
+            item = self.edge_list.takeItem(row)
+            self.edge_list.insertItem(row + 1, item)
+            self.edge_list.setCurrentRow(row + 1)
+            self.collected_edges.insert(row + 1, self.collected_edges.pop(row))
+
+    def get_edges(self):
+        return [e for _, _, e in self.collected_edges]
+
+    # --- Called by FreeCAD when user clicks OK in task panel ---
+    def accept(self):
+        if not self.jobs:
+            QtWidgets.QMessageBox.warning(self.form, "Error", "No Job found in document.")
+            return
+        if not hasattr(self, 'tools') or not self.tools:
+            QtWidgets.QMessageBox.warning(self.form, "Error", "No Tool Controller found.")
+            return
+        if len(self.collected_edges) == 0:
+            QtWidgets.QMessageBox.warning(self.form, "Error",
+                "No edges selected. Please add at least one edge.")
+            return
+
+        job  = self.jobs[self.job_combo.currentIndex()]
+        tool = self.tools[self.tool_combo.currentIndex()]
+        edges = self.get_edges()
+
+        TOTAL_DEPTH = self.total_depth.value()
+        STEP_DOWN   = self.step_down.value()
+        SAFE_HEIGHT = self.safe_height.value()
+        FEED        = int(self.feed.value())
+        PLUNGE      = int(self.plunge.value())
+        STEP_RES    = self.step_res.value()
+
+        # --- SAMPLE CURVES ---
+        points = []
+
+        def sample_edge(edge):
+            length = edge.Length
+            steps = max(2, int(length / STEP_RES))
+            pts = []
+            for i in range(steps + 1):
+                d = (length / steps) * i
+                d = min(d, length)
+                param = edge.getParameterByLength(d)
+                pts.append(edge.valueAt(param))
+            return pts
+
+        for e in edges:
+            points.extend(sample_edge(e))
+
+        # --- SAFE HEIGHT ---
+        max_z = max(p.z for p in points)
+        safe_z = max_z + SAFE_HEIGHT
+        start = points[0]
+
+        # --- DEPTH CALCULATION ---
+        passes = int(TOTAL_DEPTH // STEP_DOWN)
+        remainder = TOTAL_DEPTH - passes * STEP_DOWN
+        depths = [STEP_DOWN * (i+1) for i in range(passes)]
+        if remainder > 0.001:
+            depths.append(TOTAL_DEPTH)
+
+        # --- BUILD GCODE ---
+        gcode = ""
+        gcode += f"G0 Z{safe_z:.3f}\n"
+        gcode += f"G0 X{start.x:.3f} Y{start.y:.3f}\n"
+        for depth in depths:
+            plunge_z = start.z - depth
+            gcode += f"G1 Z{plunge_z:.3f} F{PLUNGE}\n"
+            for p in points[1:]:
+                z = p.z - depth
+                gcode += f"G1 X{p.x:.3f} Y{p.y:.3f} Z{z:.3f} F{FEED}\n"
+            gcode += f"G0 Z{safe_z:.3f}\n"
+            gcode += f"G0 X{start.x:.3f} Y{start.y:.3f}\n"
+
+        # --- CREATE PATH OBJECT ---
+        import Path.Op.Custom as PathCustom
+        import Path.Op.Gui.Base as PathOpGui
+        import Path.Op.Gui.Custom as PathCustomGui
+
+        # Close our task panel first before creating the op
+        Gui.Control.closeDialog()
+
+        # Use non-GUI Create to avoid triggering another task panel
+        op = PathCustom.Create("Custom", parentJob=job)
+
+        # Manually attach the ViewProvider
+        res = PathOpGui.CommandResources(
+            "Custom",
+            PathCustom.Create,
+            PathCustomGui.TaskPanelOpPage,
+            "CAM_Custom",
+            "Custom",
+            None,
+            "Custom GCode Operation"
         )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        if App.GuiUp:
+            op.ViewObject.Proxy = PathOpGui.ViewProvider(op.ViewObject, res)
+            op.ViewObject.Proxy.attach(op.ViewObject)
 
-        main_layout = QtWidgets.QVBoxLayout()
-        main_layout.addLayout(layout)
-        main_layout.addWidget(buttons)
-        self.setLayout(main_layout)
+        op.ToolController = tool
+        op.Source = "Text"
+        op.Gcode = [line for line in gcode.split("\n") if line.strip()]
 
-dialog = EngraveDialog()
-if dialog.exec() != QtWidgets.QDialog.Accepted:
-    raise Exception("Cancelled by user")
+        doc.recompute()
 
-TOTAL_DEPTH = dialog.total_depth.value()
-STEP_DOWN   = dialog.step_down.value()
-SAFE_HEIGHT = dialog.safe_height.value()
-FEED        = int(dialog.feed.value())
-PLUNGE      = int(dialog.plunge.value())
-STEP_RES    = dialog.step_res.value()
+        print("✅ Engrave path created successfully")
 
-# -----------------------------
-# FIND ACTIVE JOB
-# -----------------------------
-job = None
+    # --- Called by FreeCAD when user clicks Cancel ---
+    def reject(self):
+        Gui.Control.closeDialog()
+        print("❌ Engrave operation cancelled")
 
-for obj in Gui.Selection.getSelection():
-    if hasattr(obj, "Operations"):
-        job = obj
-        break
-
-if not job:
-    raise Exception("Select the Path Job")
 
 # -----------------------------
-# FIND SELECTED TOOL
+# LAUNCH TASK PANEL
 # -----------------------------
-tool = None
-
-for obj in Gui.Selection.getSelection():
-    if obj.Name.startswith("TC_") or obj.Name.startswith("TC__"):
-        tool = obj
-        break
-    if hasattr(obj, "ToolNumber"):
-        tool = obj
-        break
-
-if not tool:
-    raise Exception("Select a ToolController")
-
-# -----------------------------
-# GET SELECTED EDGES
-# -----------------------------
-edges = []
-
-sel_ex = Gui.Selection.getSelectionEx()
-
-for s in sel_ex:
-    for sub in s.SubObjects:
-        if isinstance(sub, Part.Edge):
-            edges.append(sub)
-
-    # fallback: take edges from whole object
-    if not s.SubObjects and hasattr(s.Object, "Shape"):
-        edges.extend(s.Object.Shape.Edges)
-
-if not edges:
-    raise Exception("No edges found in selection")
-
-# -----------------------------
-# SAMPLE CURVES
-# -----------------------------
-points = []
-
-def sample_edge(edge):
-    length = edge.Length
-    steps = max(2, int(length / STEP_RES))
-    pts = []
-    for i in range(steps + 1):
-        d = (length / steps) * i
-        d = min(d, length)                     # ← clamp to avoid float overshoot
-        param = edge.getParameterByLength(d)   # ← convert arc-length → parameter
-        pts.append(edge.valueAt(param))         # ← then sample position
-    return pts
-
-for e in edges:
-    points.extend(sample_edge(e))
-
-# -----------------------------
-# SAFE HEIGHT
-# -----------------------------
-max_z = max(p.z for p in points)
-safe_z = max_z + SAFE_HEIGHT
-
-start = points[0]
-end   = points[-1]
-
-# -----------------------------
-# DEPTH CALCULATION
-# -----------------------------
-passes = int(TOTAL_DEPTH // STEP_DOWN)
-remainder = TOTAL_DEPTH - passes * STEP_DOWN
-
-depths = [STEP_DOWN * (i+1) for i in range(passes)]
-if remainder > 0.001:
-    depths.append(TOTAL_DEPTH)
-
-# -----------------------------
-# BUILD GCODE
-# -----------------------------
-gcode = ""
-
-# initial safe move
-gcode += f"G0 Z{safe_z:.3f}\n"
-gcode += f"G0 X{start.x:.3f} Y{start.y:.3f}\n"
-
-for depth in depths:
-
-    # plunge to start point's surface Z minus depth
-    plunge_z = start.z - depth
-    gcode += f"G1 Z{plunge_z:.3f} F{PLUNGE}\n"
-
-    # follow path — each point uses its own Z from the curve, offset by depth
-    for p in points[1:]:
-        z = p.z - depth                        # ← surface-following Z
-        gcode += f"G1 X{p.x:.3f} Y{p.y:.3f} Z{z:.3f} F{FEED}\n"
-
-    # retract
-    gcode += f"G0 Z{safe_z:.3f}\n"
-
-    # return to start XY for next pass
-    gcode += f"G0 X{start.x:.3f} Y{start.y:.3f}\n"
-
-# -----------------------------
-# CREATE PATH OBJECT
-# -----------------------------
-#op = doc.addObject("Path::Feature", "EngraveCurves")
-#op.Path = Path.Path(gcode)
-
-# attach to job
-#job.addObject(op)
-
-# assign tool
-#op.ToolController = tool
-
-#doc.recompute()
-
-#print("✅ Engrave path created successfully")
-
-#--
-import Path.Op.Engrave as PathEngrave
-import Path.Op.Gui.Base as PathOpGui
-import Path.Op.Gui.Engrave as PathEngraveGui
-
-# Build resources exactly as FreeCAD does internally
-res = PathOpGui.CommandResources(
-    "Engrave",
-    PathEngrave.Create,
-    PathEngraveGui.TaskPanelOpPage,
-    "CAM_Engrave",
-    "Engrave",
-    None,
-    "Creates an Engraving toolpath"
-)
-res.job = job
-
-# Store gcode in a mutable container accessible to the patch
-custom_path = Path.Path(gcode)
-patch_store = {"path": custom_path, "active": True}
-
-# Patch the class-level execute before creating the op
-original_execute = PathEngrave.ObjectEngrave.execute
-original_opExecute = PathEngrave.ObjectEngrave.opExecute
-
-def patched_execute(self, obj):
-    if patch_store["active"]:
-        obj.Path = patch_store["path"]
-    else:
-        original_execute(self, obj)
-
-def patched_opExecute(self, obj):
-    if patch_store["active"]:
-        obj.Path = patch_store["path"]
-    else:
-        original_opExecute(self, obj)
-
-PathEngrave.ObjectEngrave.execute = patched_execute
-PathEngrave.ObjectEngrave.opExecute = patched_opExecute
-
-# Create op with full ViewProvider
-op = PathOpGui.Create(res)
-
-op.ToolController = tool
-
-# Clear all expressions
-for expr in ["StartDepth", "FinalDepth", "StepDown", "ClearanceHeight", "SafeHeight"]:
-    try:
-        op.setExpression(expr, None)
-    except:
-        pass
-
-op.Path = custom_path
-doc.recompute()
-
-# Restore original methods so other Engrave ops are not affected
-PathEngrave.ObjectEngrave.execute = original_execute
-PathEngrave.ObjectEngrave.opExecute = original_opExecute
-
-print("✅ Engrave path created successfully")
+panel = EngraveTaskPanel()
+Gui.Control.showDialog(panel)
