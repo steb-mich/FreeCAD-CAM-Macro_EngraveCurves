@@ -3,26 +3,85 @@ import FreeCADGui as Gui
 import Part
 import math
 import Path
+from PySide import QtWidgets, QtCore
+
 
 doc = App.ActiveDocument
 
 # -----------------------------
-# PARAMETERS (EDIT HERE)
+# PARAMETERS (GUI DIALOG)
 # -----------------------------
-TOTAL_DEPTH = 1.7     # mm
-STEP_DOWN   = 0.2     # mm
-SAFE_HEIGHT = 5.0     # mm above max Z
-FEED        = 800     # mm/min
-PLUNGE      = 200     # mm/min
-STEP_RES    = 0.1     # curve sampling resolution
+class EngraveDialog(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__(Gui.getMainWindow())
+        self.setWindowTitle("Engrave Curves Parameters")
+        self.setMinimumWidth(300)
 
-# -----------------------------
-# For debugging
-# -----------------------------
-for obj in Gui.Selection.getSelection():
-    print(obj.Name, obj.TypeId)
-    if hasattr(obj, "Proxy"):
-        print("  Proxy:", getattr(obj.Proxy, "Type", "no type"))
+        layout = QtWidgets.QFormLayout()
+
+        self.total_depth = QtWidgets.QDoubleSpinBox()
+        self.total_depth.setRange(0.01, 100.0)
+        self.total_depth.setDecimals(2)
+        self.total_depth.setSuffix(" mm")
+        self.total_depth.setValue(1.7)
+        layout.addRow("Total Depth:", self.total_depth)
+
+        self.step_down = QtWidgets.QDoubleSpinBox()
+        self.step_down.setRange(0.01, 100.0)
+        self.step_down.setDecimals(2)
+        self.step_down.setSuffix(" mm")
+        self.step_down.setValue(0.2)
+        layout.addRow("Step Down:", self.step_down)
+
+        self.safe_height = QtWidgets.QDoubleSpinBox()
+        self.safe_height.setRange(0.1, 100.0)
+        self.safe_height.setDecimals(2)
+        self.safe_height.setSuffix(" mm")
+        self.safe_height.setValue(5.0)
+        layout.addRow("Safe Height:", self.safe_height)
+
+        self.feed = QtWidgets.QDoubleSpinBox()
+        self.feed.setRange(1, 10000)
+        self.feed.setDecimals(0)
+        self.feed.setSuffix(" mm/min")
+        self.feed.setValue(800)
+        layout.addRow("Feed Rate:", self.feed)
+
+        self.plunge = QtWidgets.QDoubleSpinBox()
+        self.plunge.setRange(1, 10000)
+        self.plunge.setDecimals(0)
+        self.plunge.setSuffix(" mm/min")
+        self.plunge.setValue(200)
+        layout.addRow("Plunge Rate:", self.plunge)
+
+        self.step_res = QtWidgets.QDoubleSpinBox()
+        self.step_res.setRange(0.01, 10.0)
+        self.step_res.setDecimals(2)
+        self.step_res.setSuffix(" mm")
+        self.step_res.setValue(0.1)
+        layout.addRow("Curve Resolution:", self.step_res)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        main_layout = QtWidgets.QVBoxLayout()
+        main_layout.addLayout(layout)
+        main_layout.addWidget(buttons)
+        self.setLayout(main_layout)
+
+dialog = EngraveDialog()
+if dialog.exec() != QtWidgets.QDialog.Accepted:
+    raise Exception("Cancelled by user")
+
+TOTAL_DEPTH = dialog.total_depth.value()
+STEP_DOWN   = dialog.step_down.value()
+SAFE_HEIGHT = dialog.safe_height.value()
+FEED        = int(dialog.feed.value())
+PLUNGE      = int(dialog.plunge.value())
+STEP_RES    = dialog.step_res.value()
 
 # -----------------------------
 # FIND ACTIVE JOB
@@ -212,14 +271,3 @@ PathEngrave.ObjectEngrave.execute = original_execute
 PathEngrave.ObjectEngrave.opExecute = original_opExecute
 
 print("✅ Engrave path created successfully")
-
-#---debug
-job = [o for o in App.ActiveDocument.Objects if hasattr(o, "Operations")][0]
-op = job.Operations.Group[-1]
-print("Op name:", op.Name)
-print("Path size:", op.Path.Size)
-print("Proxy type:", type(op.Proxy))
-print("VP Proxy type:", type(op.ViewObject.Proxy))
-print("Expressions:")
-for expr in op.ExpressionEngine:
-    print(" ", expr)
