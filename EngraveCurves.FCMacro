@@ -41,8 +41,14 @@ class EngraveTaskPanel:
         edges_group = QtWidgets.QGroupBox("Edges / Curves")
         edges_layout = QtWidgets.QVBoxLayout()
 
-        self.edge_list = QtWidgets.QListWidget()
+        self.edge_list = QtWidgets.QTableWidget(0, 3)
+        self.edge_list.setHorizontalHeaderLabels(["Edge / Curve", "Reverse", "Link"])
+        self.edge_list.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        self.edge_list.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        self.edge_list.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        self.edge_list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.edge_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.edge_list.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         edges_layout.addWidget(self.edge_list)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -91,7 +97,7 @@ class EngraveTaskPanel:
         self.step_down.setRange(0.01, 100.0)
         self.step_down.setDecimals(2)
         self.step_down.setSuffix(" mm")
-        self.step_down.setValue(0.2)
+        self.step_down.setValue(0.1)
         param_layout.addRow("Step Down:", self.step_down)
 
         self.safe_height = QtWidgets.QDoubleSpinBox()
@@ -156,10 +162,26 @@ class EngraveTaskPanel:
                 if isinstance(sub, Part.Edge):
                     subname = s.SubElementNames[i]
                     label = f"{s.Object.Label} → {subname}"
-                    existing = [self.edge_list.item(r).text()
-                                for r in range(self.edge_list.count())]
+                    existing = [self.edge_list.item(r, 0).text()
+                                for r in range(self.edge_list.rowCount())]
                     if label not in existing:
-                        self.edge_list.addItem(label)
+                        row = self.edge_list.rowCount()
+                        self.edge_list.insertRow(row)
+                        self.edge_list.setItem(row, 0, QtWidgets.QTableWidgetItem(label))
+
+                        chk_rev = QtWidgets.QTableWidgetItem()
+                        chk_rev.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
+                        chk_rev.setCheckState(QtCore.Qt.Unchecked)
+                        self.edge_list.setItem(row, 1, chk_rev)
+
+                        chk_link = QtWidgets.QTableWidgetItem()
+                        if row == 0:
+                            chk_link.setFlags(QtCore.Qt.NoItemFlags)  # disabled for first row
+                        else:
+                            chk_link.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
+                        chk_link.setCheckState(QtCore.Qt.Unchecked)
+                        self.edge_list.setItem(row, 2, chk_link)
+
                         self.collected_edges.append((s.Object, subname, sub))
                         added += 1
         Gui.Selection.clearSelection()
@@ -168,31 +190,68 @@ class EngraveTaskPanel:
                 self.form, "No edges",
                 "No edges found in current selection.\n"
                 "Please click edges in the 3D view first.")
-
+	
+    def _fix_link_flags(self):
+        """Row 0 can never be linked; all other rows can be."""
+        for row in range(self.edge_list.rowCount()):
+            item = self.edge_list.item(row, 2)
+            if row == 0:
+                item.setFlags(QtCore.Qt.NoItemFlags)
+                item.setCheckState(QtCore.Qt.Unchecked)
+            else:
+                item.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
+	
     def delete_edge(self):
         row = self.edge_list.currentRow()
         if row >= 0:
-            self.edge_list.takeItem(row)
+            self.edge_list.removeRow(row)
             self.collected_edges.pop(row)
 
     def move_up(self):
         row = self.edge_list.currentRow()
         if row > 0:
-            item = self.edge_list.takeItem(row)
-            self.edge_list.insertItem(row - 1, item)
-            self.edge_list.setCurrentRow(row - 1)
+            label_a = self.edge_list.item(row - 1, 0).text()
+            label_b = self.edge_list.item(row,     0).text()
+            chk_a   = self.edge_list.item(row - 1, 1).checkState()
+            chk_b   = self.edge_list.item(row,     1).checkState()
+            lnk_a   = self.edge_list.item(row - 1, 2).checkState()
+            lnk_b   = self.edge_list.item(row,     2).checkState()
+            self.edge_list.item(row - 1, 0).setText(label_b)
+            self.edge_list.item(row,     0).setText(label_a)
+            self.edge_list.item(row - 1, 1).setCheckState(chk_b)
+            self.edge_list.item(row,     1).setCheckState(chk_a)
+            self.edge_list.item(row - 1, 2).setCheckState(lnk_b)
+            self.edge_list.item(row,     2).setCheckState(lnk_a)
+            self.edge_list.setCurrentCell(row - 1, 0)
             self.collected_edges.insert(row - 1, self.collected_edges.pop(row))
+            self._fix_link_flags()
 
     def move_down(self):
         row = self.edge_list.currentRow()
-        if row >= 0 and row < self.edge_list.count() - 1:
-            item = self.edge_list.takeItem(row)
-            self.edge_list.insertItem(row + 1, item)
-            self.edge_list.setCurrentRow(row + 1)
+        if row >= 0 and row < self.edge_list.rowCount() - 1:
+            label_a = self.edge_list.item(row,     0).text()
+            label_b = self.edge_list.item(row + 1, 0).text()
+            chk_a   = self.edge_list.item(row,     1).checkState()
+            chk_b   = self.edge_list.item(row + 1, 1).checkState()
+            lnk_a   = self.edge_list.item(row,     2).checkState()
+            lnk_b   = self.edge_list.item(row + 1, 2).checkState()
+            self.edge_list.item(row,     0).setText(label_b)
+            self.edge_list.item(row + 1, 0).setText(label_a)
+            self.edge_list.item(row,     1).setCheckState(chk_b)
+            self.edge_list.item(row + 1, 1).setCheckState(chk_a)
+            self.edge_list.item(row,     2).setCheckState(lnk_a)
+            self.edge_list.item(row + 1, 2).setCheckState(lnk_b)
+            self.edge_list.setCurrentCell(row + 1, 0)
             self.collected_edges.insert(row + 1, self.collected_edges.pop(row))
+            self._fix_link_flags()
 
     def get_edges(self):
-        return [e for _, _, e in self.collected_edges]
+        result = []
+        for i, (_, _, e) in enumerate(self.collected_edges):
+            rev  = self.edge_list.item(i, 1).checkState() == QtCore.Qt.Checked
+            link = self.edge_list.item(i, 2).checkState() == QtCore.Qt.Checked
+            result.append((e, rev, link))
+        return result
 
     # --- Called by FreeCAD when user clicks OK in task panel ---
     def accept(self):
@@ -209,7 +268,7 @@ class EngraveTaskPanel:
 
         job  = self.jobs[self.job_combo.currentIndex()]
         tool = self.tools[self.tool_combo.currentIndex()]
-        edges = self.get_edges()
+        edge_pairs = self.get_edges()
 
         TOTAL_DEPTH = self.total_depth.value()
         STEP_DOWN   = self.step_down.value()
@@ -232,13 +291,17 @@ class EngraveTaskPanel:
                 pts.append(edge.valueAt(param))
             return pts
 
-        for e in edges:
-            points.extend(sample_edge(e))
+        edge_point_lists = []
+        for e, rev, link in edge_pairs:
+            pts = sample_edge(e)
+            if rev:
+                pts = list(reversed(pts))
+            edge_point_lists.append((pts, link))
 
         # --- SAFE HEIGHT ---
-        max_z = max(p.z for p in points)
+        all_points = [p for pts, _ in edge_point_lists for p in pts]
+        max_z = max(p.z for p in all_points)
         safe_z = max_z + SAFE_HEIGHT
-        start = points[0]
 
         # --- DEPTH CALCULATION ---
         passes = int(TOTAL_DEPTH // STEP_DOWN)
@@ -248,17 +311,22 @@ class EngraveTaskPanel:
             depths.append(TOTAL_DEPTH)
 
         # --- BUILD GCODE ---
-        gcode = ""
-        gcode += f"G0 Z{safe_z:.3f}\n"
-        gcode += f"G0 X{start.x:.3f} Y{start.y:.3f}\n"
+        gcode = f"G0 Z{safe_z:.3f}\n"
         for depth in depths:
-            plunge_z = start.z - depth
-            gcode += f"G1 Z{plunge_z:.3f} F{PLUNGE}\n"
-            for p in points[1:]:
-                z = p.z - depth
-                gcode += f"G1 X{p.x:.3f} Y{p.y:.3f} Z{z:.3f} F{FEED}\n"
-            gcode += f"G0 Z{safe_z:.3f}\n"
-            gcode += f"G0 X{start.x:.3f} Y{start.y:.3f}\n"
+            for idx, (pts, link) in enumerate(edge_point_lists):
+                start = pts[0]
+                if link and idx > 0:
+                    # No retract — feed directly to start of this edge at current depth
+                    gcode += f"G1 X{start.x:.3f} Y{start.y:.3f} Z{start.z - depth:.3f} F{FEED}\n"
+                else:
+                    gcode += f"G0 X{start.x:.3f} Y{start.y:.3f}\n"
+                    gcode += f"G1 Z{start.z - depth:.3f} F{PLUNGE}\n"
+                for p in pts[1:]:
+                    gcode += f"G1 X{p.x:.3f} Y{p.y:.3f} Z{p.z - depth:.3f} F{FEED}\n"
+                # Only retract if next edge is NOT linked to this one
+                next_linked = (idx + 1 < len(edge_point_lists) and edge_point_lists[idx + 1][1])
+                if not next_linked:
+                    gcode += f"G0 Z{safe_z:.3f}\n"
 
         # --- CREATE PATH OBJECT ---
         import Path.Op.Custom as PathCustom
